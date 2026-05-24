@@ -1,3 +1,4 @@
+// AI Drive-Through Frontend Application
 import React, { useState, useEffect } from "react";
 
 interface Product {
