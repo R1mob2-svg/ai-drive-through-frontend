@@ -1,6 +1,8 @@
-// AI Drive-Through Frontend Application
-import React, { useState, useEffect } from "react";
+// AI Drive-Through — Sales Funnel Frontend
+import React, { useState, useEffect, useRef } from "react";
+import "./index.css";
 
+/* ─── TYPES ─────────────────────────────────────────────────────── */
 interface Product {
   product_id: string;
   display_name: string;
@@ -16,7 +18,7 @@ interface Product {
 interface LaneStatus {
   lane_name: string;
   status: string;
-  lane_input: any;
+  lane_input: Record<string, unknown>;
   allowed_actions: string[];
   blocked_actions: string[];
 }
@@ -42,523 +44,664 @@ interface Receipt {
   receipt_id: string;
   receipt_type: string;
   timestamp: string;
-  payload: any;
+  payload: Record<string, unknown>;
   cryptographic_signature: string;
 }
 
+/* ─── FALLBACK CATALOG ───────────────────────────────────────────── */
+const FALLBACK_CATALOG: Record<string, Product> = {
+  AI_RECEPTIONIST: {
+    product_id: "AI_RECEPTIONIST",
+    display_name: "AI Receptionist",
+    price_model: "SETUP_PLUS_SUBSCRIPTION",
+    setup_fee: 49900,
+    monthly_fee: 4900,
+    required_customer_fields: ["business_name", "business_phone"],
+    fulfilment_template_id: "tmpl_voice_receptionist_v1",
+    proof_requirements: ["voice_number_provisioned", "receptionist_prompt_loaded"],
+    allowed_fulfilment_lanes: ["alpha_voice_comms", "gamma_dashboard_onboarding"],
+  },
+  SMART_WEBSITE: {
+    product_id: "SMART_WEBSITE",
+    display_name: "Smart Website",
+    price_model: "SETUP_PLUS_SUBSCRIPTION",
+    setup_fee: 99900,
+    monthly_fee: 9900,
+    required_customer_fields: ["business_name", "business_phone"],
+    fulfilment_template_id: "tmpl_smart_website_v1",
+    proof_requirements: ["github_repo_created", "vercel_deployment_uri"],
+    allowed_fulfilment_lanes: ["beta_build_deploy", "gamma_dashboard_onboarding"],
+  },
+  SMART_WEBSITE_PLUS_RECEPTIONIST: {
+    product_id: "SMART_WEBSITE_PLUS_RECEPTIONIST",
+    display_name: "Smart Website + AI Receptionist Bundle",
+    price_model: "SETUP_PLUS_SUBSCRIPTION",
+    setup_fee: 129900,
+    monthly_fee: 12900,
+    required_customer_fields: ["business_name", "business_phone"],
+    fulfilment_template_id: "tmpl_bundle_website_voice_v1",
+    proof_requirements: ["github_repo_created", "vercel_deployment_uri", "voice_number_provisioned"],
+    allowed_fulfilment_lanes: ["alpha_voice_comms", "beta_build_deploy", "gamma_dashboard_onboarding"],
+  },
+};
+
+/* ─── HELPERS ────────────────────────────────────────────────────── */
+const gbp = (pence: number) =>
+  new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", maximumFractionDigits: 0 }).format(pence / 100);
+
+const lanePillClass = (status: string) => {
+  if (status === "COMPLETED") return "lane-status-pill completed";
+  if (status === "PROCESSING") return "lane-status-pill processing";
+  return "lane-status-pill pending";
+};
+
+/* ─── APP ────────────────────────────────────────────────────────── */
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"landing" | "checkout" | "status">("landing");
-  const [catalog, setCatalog] = useState<Record<string, Product>>({});
-  const [selectedProductId, setSelectedProductId] = useState<string>("SMART_WEBSITE_PLUS_RECEPTIONIST");
+  const backendUrl = import.meta.env.VITE_DRIVETHRU_API_URL || "http://localhost:3001";
+
+  /* connection state */
+  const [backendStatus, setBackendStatus] = useState<"CONNECTED" | "UNAVAILABLE" | "CHECKING">("CHECKING");
+
+  /* catalog */
+  const [catalog, setCatalog] = useState<Record<string, Product>>(FALLBACK_CATALOG);
+
+  /* form state */
+  const [selectedProductId, setSelectedProductId] = useState("SMART_WEBSITE_PLUS_RECEPTIONIST");
   const [customerEmail, setCustomerEmail] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [businessPhone, setBusinessPhone] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  /* internal proof state */
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskData, setTaskData] = useState<Task | null>(null);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const backendUrl =
-    import.meta.env.VITE_DRIVETHRU_API_URL || "http://localhost:3001";
 
-  const [backendStatus, setBackendStatus] = useState<"CONNECTED" | "UNAVAILABLE" | "CHECKING">("CHECKING");
-  const [backendStatusText, setBackendStatusText] = useState("Checking backend connection...");
-  const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
+  const formRef = useRef<HTMLDivElement>(null);
 
-  // Check backend health on load
+  /* ── health check ── */
   useEffect(() => {
     fetch(`${backendUrl}/health`)
-      .then((res) => {
-        if (!res.ok) throw new Error("Health check failed");
-        return res.json();
-      })
-      .then((data) => {
-        setBackendStatus("CONNECTED");
-        setBackendStatusText(`Connected to backend (${data.mode || "MOCK"} mode)`);
-        setLastCheckedAt(new Date().toLocaleTimeString());
-      })
-      .catch((err) => {
-        console.error("Backend health check failed:", err);
-        setBackendStatus("UNAVAILABLE");
-        setBackendStatusText("Backend unavailable — using fallback catalog");
-        setLastCheckedAt(new Date().toLocaleTimeString());
-      });
+      .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(() => setBackendStatus("CONNECTED"))
+      .catch(() => setBackendStatus("UNAVAILABLE"));
   }, [backendUrl]);
 
-  // Load catalog
+  /* ── catalog ── */
   useEffect(() => {
     fetch(`${backendUrl}/catalog`)
-      .then((res) => {
-        if (!res.ok) throw new Error("Catalog load failed");
-        return res.json();
-      })
-      .then((data) => setCatalog(data))
-      .catch((err) => {
-        console.error("Failed to fetch catalog from API, loading fallback:", err);
-        // Fallback mock catalog if API is offline
-        setCatalog({
-          AI_RECEPTIONIST: {
-            product_id: "AI_RECEPTIONIST",
-            display_name: "AI Receptionist",
-            price_model: "SETUP_PLUS_SUBSCRIPTION",
-            setup_fee: 49900,
-            monthly_fee: 4900,
-            required_customer_fields: ["business_name", "business_phone"],
-            fulfilment_template_id: "tmpl_voice_receptionist_v1",
-            proof_requirements: ["voice_number_provisioned", "receptionist_prompt_loaded"],
-            allowed_fulfilment_lanes: ["alpha_voice_comms", "gamma_dashboard_onboarding"]
-          },
-          SMART_WEBSITE: {
-            product_id: "SMART_WEBSITE",
-            display_name: "Smart Website",
-            price_model: "SETUP_PLUS_SUBSCRIPTION",
-            setup_fee: 99900,
-            monthly_fee: 9900,
-            required_customer_fields: ["business_name", "business_phone"],
-            fulfilment_template_id: "tmpl_smart_website_v1",
-            proof_requirements: ["github_repo_created", "vercel_deployment_uri"],
-            allowed_fulfilment_lanes: ["beta_build_deploy", "gamma_dashboard_onboarding"]
-          },
-          SMART_WEBSITE_PLUS_RECEPTIONIST: {
-            product_id: "SMART_WEBSITE_PLUS_RECEPTIONIST",
-            display_name: "Smart Website + AI Receptionist Bundle",
-            price_model: "SETUP_PLUS_SUBSCRIPTION",
-            setup_fee: 129900,
-            monthly_fee: 12900,
-            required_customer_fields: ["business_name", "business_phone"],
-            fulfilment_template_id: "tmpl_bundle_website_voice_v1",
-            proof_requirements: ["github_repo_created", "vercel_deployment_uri", "voice_number_provisioned"],
-            allowed_fulfilment_lanes: ["alpha_voice_comms", "beta_build_deploy", "gamma_dashboard_onboarding"]
-          }
-        });
-      });
+      .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+      .then((d) => setCatalog(d))
+      .catch(() => { /* keep fallback */ });
   }, [backendUrl]);
 
-  // Poll task status
+  /* ── task polling ── */
   useEffect(() => {
     if (!activeTaskId) return;
-    const interval = setInterval(() => {
+    const iv = setInterval(() => {
       fetch(`${backendUrl}/tasks/${activeTaskId}`)
-        .then((res) => res.json())
-        .then((data) => {
-          setTaskData(data);
-          if (data.status === "COMPLETED" || data.status === "FAILED" || data.status === "FAILED_AUDIT_VIOLATION") {
-            clearInterval(interval);
-          }
+        .then((r) => r.json())
+        .then((d) => {
+          setTaskData(d);
+          if (["COMPLETED", "FAILED", "FAILED_AUDIT_VIOLATION"].includes(d.status)) clearInterval(iv);
         })
-        .catch(console.error);
+        .catch(() => {});
 
       fetch(`${backendUrl}/receipts/task/${activeTaskId}`)
-        .then((res) => res.json())
-        .then((data) => setReceipts(data))
-        .catch(console.error);
+        .then((r) => r.json())
+        .then((d) => setReceipts(d))
+        .catch(() => {});
     }, 2000);
+    return () => clearInterval(iv);
+  }, [activeTaskId, backendUrl]);
 
-    return () => clearInterval(interval);
-  }, [activeTaskId]);
+  const selectedProduct = catalog[selectedProductId];
 
-  const handleCheckoutSubmit = (e: React.FormEvent) => {
+  /* ── submit ── */
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
+    if (isSubmitting) return;
+
     if (backendStatus === "UNAVAILABLE") {
-      setErrorMsg("Backend API not connected. Deploy backend preview and set VITE_DRIVETHRU_API_URL.");
-      setIsSubmitting(false);
+      setErrorMsg("We can't process requests right now — our system is offline. Please try again shortly.");
       return;
     }
 
     setIsSubmitting(true);
     setErrorMsg(null);
 
-    const payload = {
-      customerPayload: {
-        customer_email: customerEmail,
-        business_name: businessName,
-        business_phone: businessPhone,
-        product_id: selectedProductId
-      }
-    };
-
     fetch(`${backendUrl}/proof/simulate-order`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        customerPayload: {
+          customer_email: customerEmail,
+          business_name: businessName,
+          business_phone: businessPhone,
+          product_id: selectedProductId,
+        },
+      }),
     })
-      .then(async (res) => {
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.errors ? data.errors.join(", ") : data.error || "Simulation failed");
-        }
-        return data;
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.errors ? d.errors.join(", ") : d.error || "Something went wrong.");
+        return d;
       })
-      .then((data) => {
-        setActiveTaskId(data.task.task_id);
-        setTaskData(data.task);
-        setActiveTab("status");
+      .then((d) => {
+        setActiveTaskId(d.task.task_id);
+        setTaskData(d.task);
+        setSubmitSuccess(true);
       })
-      .catch((err) => {
-        setErrorMsg(err.message);
-      })
-      .finally(() => {
-        setIsSubmitting(false);
-      });
+      .catch((err) => setErrorMsg(err.message))
+      .finally(() => setIsSubmitting(false));
   };
 
-  const selectedProduct = catalog[selectedProductId];
+  const scrollToForm = () => {
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
 
+  /* ── RENDER ── */
   return (
-    <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "2rem" }}>
-      {/* Navigation bar */}
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3rem" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: backendStatus === "CONNECTED" ? "#10b981" : backendStatus === "CHECKING" ? "#fbbf24" : "#ef4444" }}></div>
-            <span style={{ fontSize: "1.25rem", fontWeight: "700", letterSpacing: "-0.025em" }} className="gradient-text">
-              AI Drive-Through
-            </span>
+    <>
+      {/* ─ NAV ─ */}
+      <nav className="nav">
+        <div className="container nav-inner">
+          <div className="nav-logo">
+            <div
+              className={`status-dot ${backendStatus === "CONNECTED" ? "dot-green" : backendStatus === "CHECKING" ? "dot-amber" : "dot-red"}`}
+            />
+            <span className="gradient-text">AI Drive-Through</span>
           </div>
-          <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>
-            {backendStatusText} {lastCheckedAt && `(Checked: ${lastCheckedAt})`}
-          </span>
+          <button className="btn btn-primary" style={{ padding: "0.55rem 1.2rem", fontSize: "0.9rem" }} onClick={scrollToForm}>
+            Get started →
+          </button>
         </div>
-        <nav style={{ display: "flex", gap: "1.5rem" }}>
-          <button
-            onClick={() => setActiveTab("landing")}
-            style={{
-              background: "none",
-              border: "none",
-              color: activeTab === "landing" ? "#6366f1" : "#94a3b8",
-              cursor: "pointer",
-              fontWeight: "600"
-            }}
-          >
-            Catalog
-          </button>
-          <button
-            onClick={() => setActiveTab("checkout")}
-            style={{
-              background: "none",
-              border: "none",
-              color: activeTab === "checkout" ? "#6366f1" : "#94a3b8",
-              cursor: "pointer",
-              fontWeight: "600"
-            }}
-          >
-            Simulate checkout
-          </button>
-          {activeTaskId && (
-            <button
-              onClick={() => setActiveTab("status")}
-              style={{
-                background: "none",
-                border: "none",
-                color: activeTab === "status" ? "#6366f1" : "#94a3b8",
-                cursor: "pointer",
-                fontWeight: "600"
-              }}
-            >
-              Fulfillment status
-            </button>
-          )}
-        </nav>
-      </header>
+      </nav>
 
-      {/* Main sections */}
-      {activeTab === "landing" && (
-        <section>
-          {backendStatus === "UNAVAILABLE" && (
-            <div style={{ background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.3)", borderRadius: "8px", padding: "1rem", color: "#f87171", marginBottom: "2rem", textAlign: "center", fontWeight: "600" }}>
-              Backend unavailable — showing demo catalog only.
+      {/* ─ HERO ─ */}
+      <section className="hero">
+        <div className="container">
+          <div className="hero-eyebrow fade-up">
+            <span>🤖</span> AI-powered local business growth
+          </div>
+
+          <h1 className="display fade-up fade-up-d1" style={{ maxWidth: "860px", margin: "0 auto 1.25rem" }}>
+            Your phone is ringing.<br />
+            <span className="gradient-text-warm">Nobody's answering.</span>
+          </h1>
+
+          <p className="subhead fade-up fade-up-d2" style={{ maxWidth: "600px", margin: "0 auto" }}>
+            Every missed call is a missed customer. AI Drive-Through gives your business an AI receptionist, a high-converting website, and an automated lead system — up and running in days, not months.
+          </p>
+
+          <div className="hero-actions fade-up fade-up-d3">
+            <button className="btn btn-primary pulse-glow" onClick={scrollToForm} style={{ padding: "1rem 2.25rem", fontSize: "1.05rem" }}>
+              Recover my missed leads →
+            </button>
+            <button className="btn btn-ghost" onClick={scrollToForm}>
+              See pricing
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* ─ PROBLEM STATS ─ */}
+      <section className="section-sm">
+        <div className="container">
+          <div className="problem-strip">
+            <div className="problem-item">
+              <div className="problem-stat gradient-text-warm">62%</div>
+              <div className="problem-label">of customers won't call back if you miss them the first time</div>
             </div>
-          )}
-          <div style={{ textAlign: "center", marginBottom: "4rem" }}>
-            <h1 style={{ fontSize: "3rem", fontWeight: "800", marginBottom: "1rem" }}>
-              Launch AI-powered websites, receptionists, and lead systems in <span className="gradient-text">minutes</span>.
-            </h1>
-            <p style={{ color: "#94a3b8", fontSize: "1.125rem", maxWidth: "800px", margin: "0 auto" }}>
-              AI Drive-Through turns a paid order into a structured fulfilment task: website, voice/comms, onboarding, receipts, and audit trail — safely in mock mode until approved.
+            <div className="problem-item">
+              <div className="problem-stat gradient-text-warm">£8k+</div>
+              <div className="problem-label">average annual revenue lost to missed calls per local business</div>
+            </div>
+            <div className="problem-item">
+              <div className="problem-stat gradient-text-warm">3 min</div>
+              <div className="problem-label">average response window — after that, conversion drops 80%</div>
+            </div>
+            <div className="problem-item">
+              <div className="problem-stat gradient-text">24/7</div>
+              <div className="problem-label">your AI receptionist never takes a day off, never misses a call</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─ PROBLEM / SOLUTION / OUTCOME ─ */}
+      <section className="section">
+        <div className="container">
+          <div style={{ textAlign: "center", marginBottom: "3.5rem" }}>
+            <div className="label" style={{ marginBottom: "1rem" }}>What we solve</div>
+            <h2 className="headline">
+              Three problems costing you money <span className="gradient-text">right now</span>
+            </h2>
+          </div>
+
+          <div className="features-grid">
+            {/* Problem 1 */}
+            <div className="card feature-card">
+              <div className="feature-icon" style={{ background: "rgba(248, 113, 113, 0.12)" }}>📵</div>
+              <div>
+                <div className="label" style={{ marginBottom: "0.5rem", color: "var(--red)" }}>Problem</div>
+                <div className="feature-title">Missed calls = missed revenue</div>
+              </div>
+              <div className="feature-body">
+                You're out on a job, your phone goes to voicemail. The customer calls your competitor instead.
+              </div>
+              <div style={{ padding: "1rem", borderRadius: "var(--radius-sm)", background: "rgba(99, 102, 241, 0.08)", border: "1px solid rgba(99, 102, 241, 0.15)" }}>
+                <div className="label" style={{ marginBottom: "0.5rem", color: "var(--accent-2)" }}>Our fix</div>
+                <div style={{ fontSize: "0.925rem", color: "var(--ink-muted)" }}>
+                  Your AI receptionist answers every call, qualifies the lead, books appointments and sends you a summary — while you're working.
+                </div>
+              </div>
+            </div>
+
+            {/* Problem 2 */}
+            <div className="card feature-card">
+              <div className="feature-icon" style={{ background: "rgba(245, 158, 11, 0.12)" }}>💸</div>
+              <div>
+                <div className="label" style={{ marginBottom: "0.5rem", color: "var(--amber)" }}>Problem</div>
+                <div className="feature-title">Ad spend going to a broken website</div>
+              </div>
+              <div className="feature-body">
+                You're paying for Google or Facebook ads but your website looks outdated and doesn't convert visitors into calls or bookings.
+              </div>
+              <div style={{ padding: "1rem", borderRadius: "var(--radius-sm)", background: "rgba(99, 102, 241, 0.08)", border: "1px solid rgba(99, 102, 241, 0.15)" }}>
+                <div className="label" style={{ marginBottom: "0.5rem", color: "var(--accent-2)" }}>Our fix</div>
+                <div style={{ fontSize: "0.925rem", color: "var(--ink-muted)" }}>
+                  We build you a premium AI-enhanced website designed to convert visitors into paying customers, with local SEO built in.
+                </div>
+              </div>
+            </div>
+
+            {/* Problem 3 */}
+            <div className="card feature-card">
+              <div className="feature-icon" style={{ background: "rgba(56, 189, 248, 0.12)" }}>⏳</div>
+              <div>
+                <div className="label" style={{ marginBottom: "0.5rem", color: "var(--accent-3)" }}>Problem</div>
+                <div className="feature-title">Hours wasted on follow-ups and admin</div>
+              </div>
+              <div className="feature-body">
+                Chasing quotes, sending reminders, replying to the same questions over and over. It kills your day.
+              </div>
+              <div style={{ padding: "1rem", borderRadius: "var(--radius-sm)", background: "rgba(99, 102, 241, 0.08)", border: "1px solid rgba(99, 102, 241, 0.15)" }}>
+                <div className="label" style={{ marginBottom: "0.5rem", color: "var(--accent-2)" }}>Our fix</div>
+                <div style={{ fontSize: "0.925rem", color: "var(--ink-muted)" }}>
+                  Automated follow-up sequences, quote reminders, and FAQ handling — all running in the background while you focus on the work.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─ HOW IT WORKS ─ */}
+      <section className="section" style={{ background: "rgba(99, 102, 241, 0.03)", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)" }}>
+        <div className="container">
+          <div style={{ textAlign: "center", marginBottom: "3rem" }}>
+            <div className="label" style={{ marginBottom: "1rem" }}>How it works</div>
+            <h2 className="headline">You're live in <span className="gradient-text">3 simple steps</span></h2>
+          </div>
+
+          <div className="steps-list">
+            <div className="step">
+              <div className="step-num">1</div>
+              <div className="step-body">
+                <h4>Tell us about your business</h4>
+                <p>Takes 2 minutes. We need your name, number, and what you do. That's it.</p>
+              </div>
+            </div>
+            <div className="step">
+              <div className="step-num">2</div>
+              <div className="step-body">
+                <h4>We build and configure everything</h4>
+                <p>Your AI receptionist, smart website, and lead system are set up and tested — you don't touch a single line of code.</p>
+              </div>
+            </div>
+            <div className="step">
+              <div className="step-num">3</div>
+              <div className="step-body">
+                <h4>Watch the leads come in</h4>
+                <p>Your system is live. Every call answered, every lead captured, every follow-up sent — automatically.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─ PRICING ─ */}
+      <section className="section" id="pricing">
+        <div className="container">
+          <div style={{ textAlign: "center", marginBottom: "3.5rem" }}>
+            <div className="label" style={{ marginBottom: "1rem" }}>Pricing</div>
+            <h2 className="headline">Simple pricing. <span className="gradient-text">No surprises.</span></h2>
+            <p className="subhead" style={{ maxWidth: "520px", margin: "1rem auto 0" }}>
+              No long-term contracts. Cancel any time. Prices in GBP.
             </p>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "2rem" }}>
-            {Object.values(catalog).map((prod) => (
-              <div key={prod.product_id} className="glass-panel" style={{ padding: "2rem", display: "flex", flexDirection: "column", justifyContent: "between", transition: "border-color 0.2s" }}>
-                <div>
-                  <h3 style={{ fontSize: "1.5rem", fontWeight: "700", marginTop: 0, marginBottom: "0.5rem" }}>
-                    {prod.display_name}
-                  </h3>
-                  <div style={{ fontSize: "1.25rem", fontWeight: "600", color: "#818cf8", marginBottom: "1.5rem" }}>
-                    ${(prod.setup_fee / 100).toFixed(2)} setup fee
-                    {prod.monthly_fee > 0 && ` + $${(prod.monthly_fee / 100).toFixed(2)}/mo`}
-                  </div>
-                  <ul style={{ paddingLeft: "1.25rem", color: "#94a3b8", fontSize: "0.95rem", marginBottom: "2rem" }}>
-                    <li>Fulfilment template: <code>{prod.fulfilment_template_id}</code></li>
-                    <li>Lanes: {prod.allowed_fulfilment_lanes.join(", ")}</li>
-                  </ul>
-                </div>
-                <button
-                  onClick={() => {
-                    setSelectedProductId(prod.product_id);
-                    setActiveTab("checkout");
-                  }}
-                  style={{
-                    width: "100%",
-                    padding: "0.75rem",
-                    borderRadius: "8px",
-                    background: "#4f46e5",
-                    color: "#fff",
-                    border: "none",
-                    fontWeight: "600",
-                    cursor: "pointer"
-                  }}
-                >
-                  Configure setup
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {activeTab === "checkout" && (
-        <section style={{ maxWidth: "600px", margin: "0 auto" }} className="glass-panel">
-          <div style={{ padding: "2.5rem" }}>
-            <h2 style={{ fontSize: "1.75rem", fontWeight: "700", marginTop: 0, marginBottom: "1.5rem" }}>
-              Configure simulated order
-            </h2>
-            {errorMsg && (
-              <div style={{ background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.3)", borderRadius: "8px", padding: "1rem", color: "#f87171", marginBottom: "1.5rem" }}>
-                {errorMsg}
-              </div>
-            )}
-            <form onSubmit={handleCheckoutSubmit} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+          <div className="pricing-grid">
+            {/* Tier 1 — Pay per lead */}
+            <div className="card pricing-card">
+              <div className="pricing-name">AI Receptionist</div>
               <div>
-                <label style={{ display: "block", fontSize: "0.875rem", fontWeight: "600", color: "#94a3b8", marginBottom: "0.375rem" }}>
-                  Product
-                </label>
-                <select
-                  value={selectedProductId}
-                  onChange={(e) => setSelectedProductId(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "0.75rem",
-                    borderRadius: "8px",
-                    background: "#1f2937",
-                    border: "1px solid #374151",
-                    color: "#f8fafc"
-                  }}
-                >
-                  {Object.values(catalog).map((prod) => (
-                    <option key={prod.product_id} value={prod.product_id}>
-                      {prod.display_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label style={{ display: "block", fontSize: "0.875rem", fontWeight: "600", color: "#94a3b8", marginBottom: "0.375rem" }}>
-                  Email
-                </label>
-                <input
-                  type="email"
-                  required
-                  placeholder="name@business.com"
-                  value={customerEmail}
-                  onChange={(e) => setCustomerEmail(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "0.75rem",
-                    borderRadius: "8px",
-                    background: "#1f2937",
-                    border: "1px solid #374151",
-                    color: "#f8fafc"
-                  }}
-                />
-              </div>
-
-              {selectedProduct?.required_customer_fields.includes("business_name") && (
-                <div>
-                  <label style={{ display: "block", fontSize: "0.875rem", fontWeight: "600", color: "#94a3b8", marginBottom: "0.375rem" }}>
-                    Business name
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder=" Newton Burgers Ltd"
-                    value={businessName}
-                    onChange={(e) => setBusinessName(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "0.75rem",
-                      borderRadius: "8px",
-                      background: "#1f2937",
-                      border: "1px solid #374151",
-                      color: "#f8fafc"
-                    }}
-                  />
+                <div className="pricing-price">
+                  {gbp(49900)} <span>setup + {gbp(4900)}/mo</span>
                 </div>
-              )}
-
-              {selectedProduct?.required_customer_fields.includes("business_phone") && (
-                <div>
-                  <label style={{ display: "block", fontSize: "0.875rem", fontWeight: "600", color: "#94a3b8", marginBottom: "0.375rem" }}>
-                    Business phone
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="+447700900077"
-                    value={businessPhone}
-                    onChange={(e) => setBusinessPhone(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "0.75rem",
-                      borderRadius: "8px",
-                      background: "#1f2937",
-                      border: "1px solid #374151",
-                      color: "#f8fafc"
-                    }}
-                  />
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                style={{
-                  width: "100%",
-                  padding: "0.875rem",
-                  borderRadius: "8px",
-                  background: "#4f46e5",
-                  color: "#fff",
-                  border: "none",
-                  fontWeight: "700",
-                  cursor: "pointer",
-                  marginTop: "1rem"
-                }}
-              >
-                {isSubmitting ? "Dispatching..." : "Simulate payment webhook"}
+              </div>
+              <div className="pricing-desc">
+                For trades and services who are losing leads to voicemail. Your AI answers every call, qualifies the lead, and texts you a summary.
+              </div>
+              <ul className="pricing-features">
+                <li>24/7 AI call answering</li>
+                <li>Lead qualification &amp; booking</li>
+                <li>SMS summary to your phone</li>
+                <li>Connects to your existing number</li>
+                <li>Live within 48 hours</li>
+              </ul>
+              <button className="btn btn-outline-accent" onClick={scrollToForm} style={{ marginTop: "auto" }}>
+                Get started →
               </button>
-            </form>
-          </div>
-        </section>
-      )}
+            </div>
 
-      {activeTab === "status" && taskData && (
-        <section>
-          <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "2rem" }}>
-            <div>
-              <div className="glass-panel" style={{ padding: "2rem", marginBottom: "2rem" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-                  <div>
-                    <h2 style={{ fontSize: "1.5rem", fontWeight: "700", margin: 0 }}>
-                      Task: {taskData.task_id}
-                    </h2>
-                    <span style={{ fontSize: "0.85rem", color: "#94a3b8" }}>
-                      Created at: {new Date(taskData.created_at).toLocaleString()}
-                    </span>
-                  </div>
-                  <span
-                    className="status-active"
-                    style={{
-                      padding: "0.5rem 1rem",
-                      borderRadius: "9999px",
-                      background:
-                        taskData.status === "COMPLETED"
-                          ? "#065f46"
-                          : taskData.status === "PROCESSING"
-                          ? "#854d0e"
-                          : "#1f2937",
-                      color: "#f8fafc",
-                      fontSize: "0.875rem",
-                      fontWeight: "700"
-                    }}
+            {/* Tier 2 — Bundle (featured) */}
+            <div className="card pricing-card featured">
+              <div className="pricing-badge">Most popular</div>
+              <div className="pricing-name">Smart Website + AI Receptionist</div>
+              <div>
+                <div className="pricing-price">
+                  {gbp(129900)} <span>setup + {gbp(12900)}/mo</span>
+                </div>
+              </div>
+              <div className="pricing-desc">
+                The complete growth engine. A high-converting website, an AI receptionist, and automated lead follow-up — all in one package.
+              </div>
+              <ul className="pricing-features">
+                <li>Everything in AI Receptionist</li>
+                <li>Premium smart website (mobile-first)</li>
+                <li>Local SEO optimisation</li>
+                <li>Automated follow-up sequences</li>
+                <li>Lead dashboard &amp; reporting</li>
+                <li>Priority onboarding support</li>
+              </ul>
+              <button className="btn btn-primary" onClick={scrollToForm} style={{ marginTop: "auto" }}>
+                Recover my leads →
+              </button>
+            </div>
+          </div>
+
+          {/* Proof badges */}
+          <div className="proof-strip" style={{ marginTop: "3rem" }}>
+            <div className="proof-badge">✅ No long-term contracts</div>
+            <div className="proof-badge">🔒 No hidden fees</div>
+            <div className="proof-badge">⚡ Live within 48–72 hours</div>
+            <div className="proof-badge">🇬🇧 UK-based support</div>
+            <div className="proof-badge">📊 Full audit trail</div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─ LEAD CAPTURE FORM ─ */}
+      <section className="section" id="get-started" ref={formRef}>
+        <div className="container">
+          <div style={{ textAlign: "center", marginBottom: "2.5rem" }}>
+            <div className="label" style={{ marginBottom: "1rem" }}>Get started</div>
+            <h2 className="headline">
+              Stop losing leads. <span className="gradient-text">Start today.</span>
+            </h2>
+            <p className="subhead" style={{ maxWidth: "520px", margin: "1rem auto 0" }}>
+              Fill in your details and we'll set everything up for you. No technical knowledge needed.
+            </p>
+          </div>
+
+          <div className="lead-form-wrap">
+            <div className="card" style={{ padding: "2.5rem" }}>
+              {submitSuccess ? (
+                <div style={{ textAlign: "center", padding: "2rem 0" }}>
+                  <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🎉</div>
+                  <h3 className="headline" style={{ fontSize: "1.5rem", marginBottom: "1rem" }}>
+                    You're in the queue!
+                  </h3>
+                  <p className="subhead" style={{ maxWidth: "400px", margin: "0 auto 1.5rem" }}>
+                    We've received your details. Our team will be in touch within 24 hours to get everything set up.
+                  </p>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => { setSubmitSuccess(false); setCustomerEmail(""); setBusinessName(""); setBusinessPhone(""); setErrorMsg(null); }}
                   >
-                    {taskData.status}
+                    Submit another enquiry
+                  </button>
+                </div>
+              ) : (
+                <form className="lead-form" onSubmit={handleSubmit}>
+                  {backendStatus === "UNAVAILABLE" && (
+                    <div className="alert alert-warn">
+                      ⚠️ Our booking system is temporarily offline — please try again shortly or contact us directly.
+                    </div>
+                  )}
+
+                  {errorMsg && (
+                    <div className="alert alert-error">
+                      ⛔ {errorMsg}
+                    </div>
+                  )}
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="select-product">What do you need?</label>
+                    <select
+                      id="select-product"
+                      className="field-input"
+                      value={selectedProductId}
+                      onChange={(e) => setSelectedProductId(e.target.value)}
+                    >
+                      {Object.values(catalog).map((p) => (
+                        <option key={p.product_id} value={p.product_id}>
+                          {p.display_name} — from {gbp(p.setup_fee)} setup
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="input-business-name">Business name</label>
+                    <input
+                      id="input-business-name"
+                      type="text"
+                      required
+                      className="field-input"
+                      placeholder="e.g. Newton's Plumbing Ltd"
+                      value={businessName}
+                      onChange={(e) => setBusinessName(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="input-phone">Your business phone number</label>
+                    <input
+                      id="input-phone"
+                      type="tel"
+                      required
+                      className="field-input"
+                      placeholder="+44 7700 900077"
+                      value={businessPhone}
+                      onChange={(e) => setBusinessPhone(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="input-email">Email address</label>
+                    <input
+                      id="input-email"
+                      type="email"
+                      required
+                      className="field-input"
+                      placeholder="you@yourbusiness.com"
+                      value={customerEmail}
+                      onChange={(e) => setCustomerEmail(e.target.value)}
+                    />
+                  </div>
+
+                  {selectedProduct && (
+                    <div style={{ padding: "1rem 1.25rem", borderRadius: "var(--radius-sm)", background: "rgba(99, 102, 241, 0.08)", border: "1px solid rgba(99, 102, 241, 0.15)", fontSize: "0.875rem", color: "var(--ink-muted)" }}>
+                      <strong style={{ color: "var(--ink)", display: "block", marginBottom: "0.25rem" }}>
+                        {selectedProduct.display_name}
+                      </strong>
+                      <span style={{ color: "var(--accent-2)", fontWeight: 700 }}>
+                        {gbp(selectedProduct.setup_fee)} setup
+                        {selectedProduct.monthly_fee > 0 && ` + ${gbp(selectedProduct.monthly_fee)}/mo`}
+                      </span>
+                    </div>
+                  )}
+
+                  <button
+                    id="btn-get-started"
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={isSubmitting || backendStatus === "UNAVAILABLE"}
+                    style={{ width: "100%", padding: "1rem", fontSize: "1.05rem", marginTop: "0.5rem" }}
+                  >
+                    {isSubmitting ? "Submitting…" : "Claim my spot →"}
+                  </button>
+
+                  <p style={{ textAlign: "center", fontSize: "0.8rem", color: "var(--ink-faint)", marginTop: "0.25rem" }}>
+                    No payment taken now. Our team will contact you within 24 hours.
+                  </p>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─ INTERNAL PROOF (collapsed) ─ */}
+      <section style={{ padding: "0 0 4rem" }}>
+        <div className="container">
+          <details className="proof-section">
+            <summary className="proof-toggle">
+              &nbsp;Internal proof view — for AG audit only
+            </summary>
+
+            <div style={{ marginTop: "1.5rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+              {/* Connection status */}
+              <div className="card" style={{ padding: "1.25rem 1.5rem" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                  <div className={`status-dot ${backendStatus === "CONNECTED" ? "dot-green" : backendStatus === "CHECKING" ? "dot-amber" : "dot-red"}`} />
+                  <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>Backend:</span>
+                  <span style={{ fontSize: "0.875rem", color: "var(--ink-muted)" }}>
+                    {backendStatus === "CONNECTED"
+                      ? `Connected — ${backendUrl}`
+                      : backendStatus === "CHECKING"
+                      ? "Checking…"
+                      : `Unavailable — ${backendUrl}`}
                   </span>
                 </div>
+              </div>
 
-                <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-                  {Object.values(taskData.lanes).map((lane: any) => (
-                    <div key={lane.lane_name} style={{ borderLeft: "4px solid #4f46e5", paddingLeft: "1.5rem" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
-                        <span style={{ fontWeight: "700" }}>{lane.lane_name}</span>
-                        <span
-                          style={{
-                            fontSize: "0.75rem",
-                            fontWeight: "700",
-                            color: lane.status === "COMPLETED" ? "#10b981" : "#fbbf24"
-                          }}
-                        >
-                          {lane.status}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: "0.85rem", color: "#94a3b8" }}>
-                        <strong>Input parameters:</strong>
-                        <pre style={{ margin: "0.25rem 0", background: "#0f172a", padding: "0.5rem", borderRadius: "4px" }}>
-                          {JSON.stringify(lane.lane_input, null, 2)}
-                        </pre>
+              {/* Task data */}
+              {taskData ? (
+                <div className="card" style={{ padding: "1.5rem" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: "0.95rem" }}>Task: {taskData.task_id}</div>
+                      <div style={{ fontSize: "0.8rem", color: "var(--ink-faint)" }}>
+                        Created: {new Date(taskData.created_at).toLocaleString()}
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
+                    <span
+                      className="lane-status-pill"
+                      style={{
+                        padding: "0.4rem 1rem",
+                        borderRadius: "999px",
+                        background:
+                          taskData.status === "COMPLETED" ? "rgba(16,185,129,0.15)" :
+                          taskData.status === "PROCESSING" ? "rgba(245,158,11,0.15)" :
+                          "rgba(99,102,241,0.12)",
+                        color:
+                          taskData.status === "COMPLETED" ? "var(--green)" :
+                          taskData.status === "PROCESSING" ? "var(--amber)" :
+                          "var(--accent-2)",
+                        fontSize: "0.8rem",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {taskData.status}
+                    </span>
+                  </div>
 
-              <div className="glass-panel" style={{ padding: "2rem" }}>
-                <h3 style={{ fontSize: "1.25rem", fontWeight: "700", marginTop: 0, marginBottom: "1rem" }}>
-                  Receipt logs
-                </h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                  {receipts.map((rcpt) => (
-                    <details key={rcpt.receipt_id} style={{ background: "#0f172a", padding: "1rem", borderRadius: "8px" }}>
-                      <summary style={{ cursor: "pointer", fontWeight: "600" }}>
-                        {rcpt.receipt_type} ({rcpt.receipt_id})
-                      </summary>
-                      <div style={{ marginTop: "1rem", fontSize: "0.85rem" }}>
-                        <pre>{JSON.stringify(rcpt.payload, null, 2)}</pre>
-                        <hr style={{ borderColor: "#1e293b", margin: "1rem 0" }} />
-                        <span style={{ fontFamily: "monospace", color: "#6366f1" }}>
-                          Signature: {rcpt.cryptographic_signature}
-                        </span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+                    {Object.values(taskData.lanes).map((lane: LaneStatus) => (
+                      <div key={lane.lane_name} className="lane-row">
+                        <div>
+                          <div className="lane-name">{lane.lane_name}</div>
+                          <div style={{ fontSize: "0.8rem", color: "var(--ink-faint)", marginTop: "0.25rem" }}>
+                            Allowed: {lane.allowed_actions.join(", ")}
+                          </div>
+                        </div>
+                        <span className={lanePillClass(lane.status)}>{lane.status}</span>
                       </div>
-                    </details>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            </div>
+              ) : (
+                <div style={{ fontSize: "0.875rem", color: "var(--ink-faint)" }}>
+                  No task dispatched yet. Submit the form above to create a simulation task.
+                </div>
+              )}
 
-            <div>
-              <div className="glass-panel" style={{ padding: "2rem" }}>
-                <h3 style={{ fontSize: "1.25rem", fontWeight: "700", marginTop: 0, marginBottom: "1rem" }}>
-                  AG Audit verification
-                </h3>
-                {taskData.status === "COMPLETED" ? (
-                  <div style={{ color: "#10b981" }}>
-                    <div style={{ fontSize: "1.5rem", fontWeight: "700", marginBottom: "0.5rem" }}>PASSED</div>
-                    <p style={{ fontSize: "0.9rem", color: "#94a3b8" }}>
-                      Verification checks complete. Zero live credential leaks detected. Environments matches isolation settings.
-                    </p>
+              {/* Receipts */}
+              {receipts.length > 0 && (
+                <div className="card" style={{ padding: "1.5rem" }}>
+                  <div style={{ fontWeight: 700, fontSize: "0.95rem", marginBottom: "1rem" }}>Receipt logs ({receipts.length})</div>
+                  <div className="receipt-panel">
+                    {receipts.map((rcpt) => (
+                      <details key={rcpt.receipt_id} className="receipt-item">
+                        <summary className="receipt-summary">
+                          {rcpt.receipt_type} — {rcpt.receipt_id}
+                        </summary>
+                        <div className="receipt-body">
+                          <pre className="receipt-pre">{JSON.stringify(rcpt.payload, null, 2)}</pre>
+                          <div style={{ marginTop: "0.75rem", fontFamily: "monospace", fontSize: "0.75rem", color: "var(--accent)" }}>
+                            Sig: {rcpt.cryptographic_signature}
+                          </div>
+                        </div>
+                      </details>
+                    ))}
                   </div>
-                ) : taskData.status === "FAILED_AUDIT_VIOLATION" ? (
-                  <div style={{ color: "#ef4444" }}>
-                    <div style={{ fontSize: "1.5rem", fontWeight: "700", marginBottom: "0.5rem" }}>FAILED</div>
-                    <p style={{ fontSize: "0.9rem", color: "#94a3b8" }}>
-                      Audit failure: Blocked live environments action caught inside processing loop.
-                    </p>
-                  </div>
-                ) : (
-                  <div style={{ color: "#fbbf24" }}>
-                    <div style={{ fontSize: "1.5rem", fontWeight: "700", marginBottom: "0.5rem" }}>AWAITING COMPILATION</div>
-                    <p style={{ fontSize: "0.9rem", color: "#94a3b8" }}>
-                      Processing lanes before compilation checks.
-                    </p>
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
+
+              {/* AG audit panel */}
+              {taskData && (
+                <div className="card" style={{ padding: "1.5rem" }}>
+                  <div style={{ fontWeight: 700, fontSize: "0.95rem", marginBottom: "1rem" }}>AG Audit verification</div>
+                  {taskData.status === "COMPLETED" ? (
+                    <div className="alert alert-success">✅ PASSED — Zero live credential leaks. Environment isolation confirmed.</div>
+                  ) : taskData.status === "FAILED_AUDIT_VIOLATION" ? (
+                    <div className="alert alert-error">⛔ FAILED — Blocked live-environment action caught in processing loop.</div>
+                  ) : (
+                    <div className="alert alert-warn">⏳ AWAITING — Processing lanes before audit compilation.</div>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
-        </section>
-      )}
-    </div>
+          </details>
+        </div>
+      </section>
+
+      {/* ─ FOOTER ─ */}
+      <footer className="footer">
+        <div className="container">
+          <p>© {new Date().getFullYear()} AI Drive-Through by Entreprenuity. All rights reserved.</p>
+          <p style={{ marginTop: "0.5rem" }}>
+            AI-powered growth tools for local businesses.&nbsp;
+            <span style={{ color: "var(--accent)" }}>Trusted. Tested. Live in days.</span>
+          </p>
+        </div>
+      </footer>
+    </>
   );
 }
