@@ -58,7 +58,32 @@ export default function App() {
   const [taskData, setTaskData] = useState<Task | null>(null);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [backendUrl] = useState("http://localhost:3001");
+  const backendUrl =
+    import.meta.env.VITE_DRIVETHRU_API_URL || "http://localhost:3001";
+
+  const [backendStatus, setBackendStatus] = useState<"CONNECTED" | "UNAVAILABLE" | "CHECKING">("CHECKING");
+  const [backendStatusText, setBackendStatusText] = useState("Checking backend connection...");
+  const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
+
+  // Check backend health on load
+  useEffect(() => {
+    fetch(`${backendUrl}/health`)
+      .then((res) => {
+        if (!res.ok) throw new Error("Health check failed");
+        return res.json();
+      })
+      .then((data) => {
+        setBackendStatus("CONNECTED");
+        setBackendStatusText(`Connected to backend (${data.mode || "MOCK"} mode)`);
+        setLastCheckedAt(new Date().toLocaleTimeString());
+      })
+      .catch((err) => {
+        console.error("Backend health check failed:", err);
+        setBackendStatus("UNAVAILABLE");
+        setBackendStatusText("Backend unavailable — using fallback catalog");
+        setLastCheckedAt(new Date().toLocaleTimeString());
+      });
+  }, [backendUrl]);
 
   // Load catalog
   useEffect(() => {
@@ -69,7 +94,7 @@ export default function App() {
       })
       .then((data) => setCatalog(data))
       .catch((err) => {
-        console.error(err);
+        console.error("Failed to fetch catalog from API, loading fallback:", err);
         // Fallback mock catalog if API is offline
         setCatalog({
           AI_RECEPTIONIST: {
@@ -107,7 +132,7 @@ export default function App() {
           }
         });
       });
-  }, []);
+  }, [backendUrl]);
 
   // Poll task status
   useEffect(() => {
@@ -134,6 +159,13 @@ export default function App() {
 
   const handleCheckoutSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (backendStatus === "UNAVAILABLE") {
+      setErrorMsg("Backend API not connected. Deploy backend preview and set VITE_DRIVETHRU_API_URL.");
+      setIsSubmitting(false);
+      return;
+    }
+
     setIsSubmitting(true);
     setErrorMsg(null);
 
@@ -177,10 +209,15 @@ export default function App() {
     <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "2rem" }}>
       {/* Navigation bar */}
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3rem" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <div style={{ width: "16px", height: "16px", borderRadius: "50%", background: "#6366f1" }}></div>
-          <span style={{ fontSize: "1.25rem", fontWeight: "700", letterSpacing: "-0.025em" }} className="gradient-text">
-            AI Drive-Through
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: backendStatus === "CONNECTED" ? "#10b981" : backendStatus === "CHECKING" ? "#fbbf24" : "#ef4444" }}></div>
+            <span style={{ fontSize: "1.25rem", fontWeight: "700", letterSpacing: "-0.025em" }} className="gradient-text">
+              AI Drive-Through
+            </span>
+          </div>
+          <span style={{ fontSize: "0.75rem", color: "#94a3b8" }}>
+            {backendStatusText} {lastCheckedAt && `(Checked: ${lastCheckedAt})`}
           </span>
         </div>
         <nav style={{ display: "flex", gap: "1.5rem" }}>
@@ -228,12 +265,17 @@ export default function App() {
       {/* Main sections */}
       {activeTab === "landing" && (
         <section>
+          {backendStatus === "UNAVAILABLE" && (
+            <div style={{ background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.3)", borderRadius: "8px", padding: "1rem", color: "#f87171", marginBottom: "2rem", textAlign: "center", fontWeight: "600" }}>
+              Backend unavailable — showing demo catalog only.
+            </div>
+          )}
           <div style={{ textAlign: "center", marginBottom: "4rem" }}>
             <h1 style={{ fontSize: "3rem", fontWeight: "800", marginBottom: "1rem" }}>
-              Accelerate local setups with <span className="gradient-text">Smart Builders</span>
+              Launch AI-powered websites, receptionists, and lead systems in <span className="gradient-text">minutes</span>.
             </h1>
-            <p style={{ color: "#94a3b8", fontSize: "1.125rem", maxWidth: "600px", margin: "0 auto" }}>
-              Provision communications, configure websites, and onboard databases in seconds.
+            <p style={{ color: "#94a3b8", fontSize: "1.125rem", maxWidth: "800px", margin: "0 auto" }}>
+              AI Drive-Through turns a paid order into a structured fulfilment task: website, voice/comms, onboarding, receipts, and audit trail — safely in mock mode until approved.
             </p>
           </div>
 
