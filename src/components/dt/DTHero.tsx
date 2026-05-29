@@ -64,8 +64,8 @@ const DTHero = () => {
           {/* Left Content */}
           <div className="max-w-2xl">
             <h1 className="headline-instrument mb-6 animate-slide-up">
-              <span className="headline-primary">Stop Missing Calls</span>{" "}
-              <span className="headline-accent-gradient">While You Work.</span>
+              <span className="headline-primary">We Build AI Systems That Get You More Leads, Answer Every Call, and Run Your Follow-Ups—</span>{" "}
+              <span className="headline-accent-gradient">So You Don't Have To.</span>
             </h1>
 
             <p className="hero-body-dmsans mb-8 animate-slide-up" style={{ animationDelay: "0.1s" }}>
